@@ -10,6 +10,8 @@ Remotion 和已核实身份的 HyperFrames 都提供代码编写、浏览器预�
 
 调查分为四个角度：项目身份与维护；agent 调用和预览检查；时间/音乐与复现；本地平台及许可。来源的 `main` 和在线文档会变化；本轮 HyperFrames API 读取的 main SHA 为 `3151fd21330e7e955210bfd3f557bc8d78d243c5`，并已另抓取该 SHA 的 CLI 文档确认。接口不等于已安装版本的能力。[提交 API](https://api.github.com/repos/heygen-com/hyperframes/commits/main)、[固定版本 CLI 文档](https://github.com/heygen-com/hyperframes/blob/3151fd21330e7e955210bfd3f557bc8d78d243c5/docs/packages/cli.mdx)
 
+连续区间渲染的正式发布证据、格式限制与音频边界另见[HyperFrames 区间渲染核验](hyperframes-range.md)。报告中的版本与提交标识仅用于事实溯源，不是项目依赖版本要求。
+
 ## 1. HyperFrames 的真实身份与可用状态
 
 1. **直接证据／高信心：**本次可确认的候选是 HeyGen 组织的 [`heygen-com/hyperframes`](https://github.com/heygen-com/hyperframes)，其仓库将官方文档指向 `hyperframes.heygen.com`，npm 包名为 `hyperframes`，不是凭名称推断的任意同名项目。README 明列 CLI、渲染引擎、agent skills 和 Studio 可用，Studio 仍在演进；第一方 API 显示仓库公开、未归档、未禁用，查询时有正式 release `v0.9.22`（2026-11-08 发布）。这支持“有公开实现且仍有发布”，不证明质量、长期维护承诺或本机安装成功。[README](https://github.com/heygen-com/hyperframes/blob/main/README.md)、[仓库 API](https://api.github.com/repos/heygen-com/hyperframes)、[release](https://github.com/heygen-com/hyperframes/releases/tag/v0.9.22)
@@ -26,7 +28,7 @@ Remotion 和已核实身份的 HyperFrames 都提供代码编写、浏览器预�
 | 编写画面 | React 组件；agent 可改源文件与参数。CLI 可显式指定入口、composition ID、输出路径和 `--props`。省略 composition 会出现交互选择，因此无人值守调用应完整传参。Windows shell 的内联 JSON 有引号问题，官方要求改用 props 文件。[CLI](https://www.remotion.dev/docs/cli/render) | HTML/CSS、`data-start`/`data-duration` 等属性和 seekable 动画；不要求 React。CLI 大部分命令支持 `--json`，失败非零退出；不支持 JSON 的命令会拒绝该参数，不是统一所有接口。[README](https://github.com/heygen-com/hyperframes/blob/main/README.md)、[CLI](https://github.com/heygen-com/hyperframes/blob/3151fd21330e7e955210bfd3f557bc8d78d243c5/docs/packages/cli.mdx) |
 | 完整实时预览 | 本地开发服务器启动 Remotion Studio，提供交互预览；官方也提供可嵌入的 `<Player>`，但将其嵌入工作台是额外集成，不是已有本项目实现。[起步](https://www.remotion.dev/docs)、[预览](https://www.remotion.dev/docs/preview)、[Player](https://www.remotion.dev/docs/player) | `npx hyperframes preview` 启动带热更新的 Studio；`play` 是轻量 Player。`preview --context --json` 可读取运行中 Studio 的当前时间、选中元素、源文件等，不能在没有服务时凭空取得选择上下文。[预览接口](https://github.com/heygen-com/hyperframes/blob/main/skills/hyperframes-cli/references/preview-render.md) |
 | 单帧／离散时刻检查 | `npx remotion still` 支持 `--frame`，Node API 有 `renderStill()`；`renderFrames()` 可输出图片序列。`render --frames=0,30,60` 的离散列表自动启用图片序列是文档标明从 v4.0.502 开始的能力。[still](https://www.remotion.dev/docs/cli/still)、[renderStill](https://www.remotion.dev/docs/renderer/render-still)、[renderFrames](https://www.remotion.dev/docs/renderer/render-frames)、[CLI](https://www.remotion.dev/docs/cli/render) | `snapshot --at 1.5,4,7.25` 按秒采样，`--range START,END` 限定采样区间，输出 PNG；可指定子 composition、局部放大和参考视频对照。该 range 是截图采样范围，不代表渲染区间。[CLI](https://github.com/heygen-com/hyperframes/blob/3151fd21330e7e955210bfd3f557bc8d78d243c5/docs/packages/cli.mdx)、[agent CLI 指南](https://github.com/heygen-com/hyperframes/blob/main/skills/hyperframes-cli/SKILL.md) |
-| 连续片段检查 | `render --frames=90-149` 直接渲染闭区间帧片段；当前文档还支持多段范围拼接。它输出的是选定范围，不是全片，并且多范围会省略中间帧。[CLI](https://www.remotion.dev/docs/cli/render) | 已核验 `render -c compositions/intro.html` 可单独渲染场景；本轮查阅的 render 参数表未找到任意全局起止时间截片接口，不能把 `snapshot --range` 或 timeline 的 trim 当成它。全局区间成品检查可组合 FFmpeg 截片。[render 参数](https://github.com/heygen-com/hyperframes/blob/main/skills/hyperframes-cli/references/preview-render.md)、[FFmpeg](https://ffmpeg.org/ffmpeg.html) |
+| 连续片段检查 | `render --frames=90-149` 直接渲染闭区间帧片段；当前文档还支持多段范围拼接。它输出的是选定范围，不是全片，并且多范围会省略中间帧。[CLI](https://www.remotion.dev/docs/cli/render) | `render --start <秒> --end <秒>` 已在正式发布源码核实，可直接输出带音频的全局区间 MP4，片段从 0 开始；限 SDR、24/25/30/60 fps，区间对齐视频帧，未实测音频边界。`render -c compositions/intro.html` 另用于指定场景，`snapshot --range` 仍只是静帧采样。完整 CLI 文档与执行代码包含区间接口，技能简表未列，不能据简表遗漏否定能力。[区间渲染证据与限制](hyperframes-range.md)、[FFmpeg](https://ffmpeg.org/ffmpeg.html) |
 | 自动检查 | CLI/renderer 可报告渲染错误；本轮没有证据证明其基础渲染 API 能评判审美、叙事或音乐合适性。[renderMedia](https://www.remotion.dev/docs/renderer/render-media) | `lint` 静态检查，`check --json` 聚合运行时、布局、运动断言、对比度和音轨等采样检查；没有运行浏览器时 `browserSkipped=true`，空结果不能当通过。采样不能证明所有时间点都无问题。[CLI check](https://github.com/heygen-com/hyperframes/blob/3151fd21330e7e955210bfd3f557bc8d78d243c5/docs/packages/cli.mdx) |
 | 完整导出 | `npx remotion render <entry> <id> <out>`；Node 可组合 `bundle()`、composition 解析及 `renderMedia()`。支持编码器、分辨率、音频等参数；不必调用云服务。[渲染入口](https://www.remotion.dev/docs/render)、[renderMedia](https://www.remotion.dev/docs/renderer/render-media) | `npx hyperframes render --output final.mp4` 本地导出；参数表列 MP4、WebM、MOV、GIF、PNG sequence 等，GIF 没有音频，透明度与 HDR 有各自边界。[render](https://github.com/heygen-com/hyperframes/blob/main/skills/hyperframes-cli/references/preview-render.md) |
 
@@ -80,7 +82,7 @@ Remotion 和已核实身份的 HyperFrames 都提供代码编写、浏览器预�
 
 ## 8. 对后续决定的影响与未知
 
-**可据此决定的事实边界（研究判断，不是实施计划）：**两条路线都有可由现有 agent 调用的编写、预览和导出入口；无需因此新增 agent 框架或完整编辑器。Remotion 的帧范围渲染和 HyperFrames 的时间采样/选择上下文桥接是不同的现成能力，不能强行写成完全对称。检查约定应区分创作预览、静帧、连续片段、最终编码文件、元数据与人的观看/听音确认；工具只覆盖其中一部分。
+**可据此决定的事实边界（研究判断，不是实施计划）：**两条路线都有可由现有 agent 调用的编写、预览和导出入口；无需因此新增 agent 框架或完整编辑器。两者均有连续区间渲染入口，但参数、格式与帧率限制不同；HyperFrames 另有时间采样和选择上下文桥接，不能将接口视为完全对称。检查约定应区分创作预览、静帧、连续片段、最终编码文件、元数据与人的观看/听音确认；工具只覆盖其中一部分。
 
 **仍未知：**当前宿主机能否启动候选 Chrome 与渲染器；中文字体/路径/WSL 浏览器访问和音频输出；Node 26 与实际包版本组合；任意时刻截图和导出帧的对应精度；预览与编码音轨实际偏差；跨机器复现程度；现有 coding agent 对连续视频和音乐的感知能力；具体音乐权利；未来版本许可/价格变化。没有可报告的渲染速度、内存、画质或理解能力 benchmark。
 
