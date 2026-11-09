@@ -8,6 +8,9 @@
 - 用原型回答创作问题：读取 `.agents/skills/video-prototype/SKILL.md`。
 - 检查视频结果：读取 `.agents/skills/video-review/SKILL.md`。
 - 制作、音乐分析、预览或导出：读取 `.agents/skills/video-produce/SKILL.md`。
+- 人工配置项目 Git／tracker：读取 `.agents/skills/video-setup/SKILL.md`。
+- 按要求整理并发布视频任务：读取 `.agents/skills/video-tasks/SKILL.md`。
+- 获授权后协调复杂项目：读取 `.agents/skills/video-coordinate/SKILL.md`。
 
 作品归 `projects/<项目名>/`，共享素材归 `shared/`。进入项目先查本地指引；简单项目不强制 Git、tracker 或子代理，已有配置照实际状态使用。工作台 GitHub tracker 不自动用于作品。
 上游仅按任务指针作参考。额外依赖／浏览器下载先说明用途并获同意；项目或音乐外传、账号及计费服务另获同意，关闭非必要遥测。
