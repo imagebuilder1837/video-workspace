@@ -1,7 +1,8 @@
 node_modules/
 .hyperframes/
 .cache/
-renders/
+**/renders/*
+!**/renders/.gitkeep
 exports/
 dist/
 

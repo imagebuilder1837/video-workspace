@@ -4,8 +4,9 @@
 
 ## 视频制作
 
-- 讨论文稿视频化、结构、音乐与视觉：读取 `.agents/skills/video-create/SKILL.md`。
-- 明确要求整理或更新设计文件：读取 `.agents/skills/video-blueprint/SKILL.md`。
+- 讨论创作、反馈或整理设计：读取 `.agents/skills/video-discuss/SKILL.md`。
+- 用原型回答创作问题：读取 `.agents/skills/video-prototype/SKILL.md`。
+- 检查视频结果：读取 `.agents/skills/video-review/SKILL.md`。
 - 制作、音乐分析、预览或导出：读取 `.agents/skills/video-produce/SKILL.md`。
 
 作品归 `projects/<项目名>/`，共享素材归 `shared/`。进入项目先查本地指引；简单项目不强制 Git、tracker 或子代理，已有配置照实际状态使用。工作台 GitHub tracker 不自动用于作品。
