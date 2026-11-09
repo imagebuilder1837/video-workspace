@@ -11,9 +11,9 @@ npm run hf -- doctor --json
 ```
 
 Node/npm 满足 HyperFrames 包的 engines 要求即可；实际依赖以 package.json 和锁文件为准。
-Arch 系统与包数据库应保持一致，不做 `pacman -Sy` 后单独安装形成的部分升级。
+Arch 系统与包数据库应保持一致。
 
-doctor 的 Node.js、FFmpeg、FFprobe、Chrome 是本路径的核心项；可选模型、Docker 等缺失不要求补装，退出码或顶层 ok 也不能替代逐项判断。
+逐项核对 doctor 中 Node.js、FFmpeg、FFprobe、Chrome 四个核心项的结果。
 
 ## 使用
 
@@ -21,8 +21,8 @@ doctor 的 Node.js、FFmpeg、FFprobe、Chrome 是本路径的核心项；可选
 
 ## 升级与排错
 
-先检查正式版变更、弃用与兼容性，再更新依赖及 vendor 来源，复查受影响能力；不在一次产物生成与检查之间换版。
-`npm run vendor:update` 需要 Git 和网络，将上游参考替换为最新正式版并更新来源；保留既有筛选规则，不升级 npm 依赖。执行后审阅差异，确认参考与已安装工具兼容。
-安全审计使用 `npm audit`。当前上游固定依赖存在告警，未用 force 自动降级或覆盖；处理方案需另行核对兼容性。
+先检查正式版变更、弃用与兼容性，再更新依赖及 vendor 来源，复查受影响能力。
+`npm run vendor:update` 需要 Git 和网络，将上游参考替换为最新正式版并更新来源；保留既有筛选规则。执行后审阅差异，确认参考与已安装工具兼容。
+安全审计使用 `npm audit`。当前上游固定依赖存在告警；处理方案需另行核对兼容性。
 
-调查事实见 [HyperFrames 上游能力](external/hyperframes-upstream.md)；文档／源码支持不等于本机制作已验证。
+调查事实见 [HyperFrames 上游能力](external/hyperframes-upstream.md)。
