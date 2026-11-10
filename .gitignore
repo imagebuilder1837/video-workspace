@@ -4,4 +4,5 @@
 /shared/
 /.hyperframes/
 /.cache/
+/.pi/audio-understand.local.json
 npm-debug.log*

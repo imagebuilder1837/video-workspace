@@ -3,10 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:audio": "node --test .pi/extensions/audio-understand/test/*.test.ts",
     "vendor:update": "node scripts/update-hyperframes-vendor.js",
     "hf": "HYPERFRAMES_NO_TELEMETRY=1 HYPERFRAMES_NO_UPDATE_CHECK=1 DO_NOT_TRACK=1 HYPERFRAMES_SKIP_SKILLS=1 HYPERFRAMES_BROWSER_PATH=/usr/bin/chromium hyperframes"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "hyperframes": "^0.9.26"
   }
 }

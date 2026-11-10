@@ -1,0 +1,14 @@
+{
+  "baseUrl": "https://example.invalid/v1",
+  "model": "<audio-capable-model>",
+  "apiKey": "",
+  "apiKeyEnv": "AUDIO_API_KEY",
+  "requestParams": {
+    "max_tokens": 2048
+  },
+  "limits": {
+    "timeoutMs": 120000,
+    "maxEncodedAudioBytes": 8000000,
+    "cacheMaxAgeMs": 86400000
+  }
+}
