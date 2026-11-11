@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -eq 0 ]; then
+  printf '%s\n' 'Usage: workspace-env <command> [args...]' >&2
+  exit 64
+fi
+
+workspace=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+export PATH="$workspace/node_modules/.bin:$PATH"
+export HYPERFRAMES_MEDIA_HOME="$workspace"
+export HYPERFRAMES_BROWSER_PATH=/usr/bin/chromium
+export CHROME=/usr/bin/chromium
+export HYPERFRAMES_NO_TELEMETRY=1
+export DO_NOT_TRACK=1
+export HYPERFRAMES_NO_UPDATE_CHECK=1
+export HYPERFRAMES_SKIP_SKILLS=1
+
+exec "$@"

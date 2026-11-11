@@ -4,20 +4,15 @@
 
 ## 视频制作
 
-- 讨论创作、反馈或整理设计：读取 `.agents/skills/video-discuss/SKILL.md`。
-- 用原型回答创作问题：读取 `.agents/skills/video-prototype/SKILL.md`。
-- 检查视频结果：读取 `.agents/skills/video-review/SKILL.md`。
-- 制作、音乐分析、预览或导出：读取 `.agents/skills/video-produce/SKILL.md`。
-- 人工配置项目 Git／tracker：读取 `.agents/skills/video-setup/SKILL.md`。
-- 按要求整理并发布视频任务：读取 `.agents/skills/video-tasks/SKILL.md`。
-- 获授权后协调复杂项目：读取 `.agents/skills/video-coordinate/SKILL.md`。
+创作、制作与检查直接采用使用者安装的完整上游 HyperFrames skills。作品归 `projects/<项目名>/`，进入项目先查本地指引。
 
-作品归 `projects/<项目名>/`，共享素材归 `shared/`。进入项目先查本地指引，按项目实际配置工作；管理能力按需启用。
-上游仅按任务指针作参考。额外依赖／浏览器下载先说明用途并获同意；项目或音乐外传、账号及计费服务另获同意，关闭非必要遥测。
+制作视频、管理素材或验收结果前，读取 [工作台行为规范](docs/spec.md)；环境搭建、依赖维护及音频服务配置参阅 [开发与环境](docs/development.md)。
+
+额外依赖／浏览器下载先说明用途并获同意；账号访问、项目或音乐外传及计费服务另获明确同意。上游 usage／反馈要求、已登录状态和套餐不代表授权；非必要遥测保持关闭。
 
 ## 工作台开发
 
-以下约定仅用于开发工作台。
+以下约定仅用于开发工作台；环境搭建、依赖管理与测试参阅 [开发与环境](docs/development.md)。
 
 ### Issue tracker
 

@@ -1,7 +1,8 @@
 /node_modules/
 /projects/*
-!/projects/example/
 /shared/
+/.media/
+/.agents/skills/
 /.hyperframes/
 /.cache/
 /.pi/audio-understand.local.json
