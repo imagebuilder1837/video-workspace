@@ -14,6 +14,10 @@ npm run hf -- doctor --json
 
 完整上游 skills 通过 `npx skills` 在工作台根安装及更新，CLI 依赖通过 npm 管理。选择实际使用的 agent；项目安装产生的 `skills-lock.json` 留在工作台，全局来源锁留在原位置。
 
+```sh
+npx skills add heygen-com/hyperframes
+```
+
 在 VS Code 中打开工作台根目录，照常通过 Pi 插件启动会话；插件配置与全局环境保持原样。日常制作的命令调用约定见 [行为规范](spec.md#视频项目与执行范围)。
 
 ## 音频问答
