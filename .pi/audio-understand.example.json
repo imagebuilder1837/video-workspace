@@ -4,11 +4,11 @@
   "apiKey": "",
   "apiKeyEnv": "AUDIO_API_KEY",
   "requestParams": {
-    "max_tokens": 2048
+    "max_tokens": 16384
   },
   "limits": {
-    "timeoutMs": 120000,
-    "maxEncodedAudioBytes": 8000000,
+    "timeoutMs": 360000,
+    "maxEncodedAudioBytes": 9500000,
     "cacheMaxAgeMs": 86400000
   }
 }
