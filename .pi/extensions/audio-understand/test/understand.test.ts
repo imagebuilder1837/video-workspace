@@ -169,7 +169,7 @@ test('refreshes unreadable JSON caches and supports explicitly fresh requests', 
   const f = await fixture(t);
   const first = await f.ask(f.request);
   for (const broken of ['interrupted JSON', 'null']) {
-    await writeFile(first.cache.reportPath!, broken);
+    await writeFile(first.batches[0].cache!.reportPath!, broken);
     assert.equal((await f.ask(f.request)).cache.hit, false);
   }
   await f.configure({ limits: { cacheMaxAgeMs: 0 } });
@@ -178,14 +178,14 @@ test('refreshes unreadable JSON caches and supports explicitly fresh requests', 
   assert.equal(f.calls.length, 5);
 });
 
-test('rejects invalid media/ranges and aggregate oversized input before any upload', async (t) => {
+test('rejects invalid media/ranges and a single oversized source before any upload', async (t) => {
   const f = await fixture(t);
   for (const source of [
-    { path: f.audio, start: 2, end: 1 }, { path: f.audio, end: 4 },
+    { path: f.audio, start: 2, end: 1 }, { path: f.audio, start: 4 }, { path: f.audio, end: -1 },
     { path: f.audio, start: NaN }, { path: f.root },
   ]) await assert.rejects(f.ask({ ...f.request, sources: [source] }));
-  await f.configure({ limits: { maxEncodedAudioBytes: 4 * Math.ceil(f.original.length / 3) + 8 } });
-  await assert.rejects(f.ask({ ...f.request, sources: [{ path: f.audio }, { path: f.audio }] }), /encoded bytes/);
+  await f.configure({ limits: { maxEncodedAudioBytes: 4 * Math.ceil(f.original.length / 3) - 1 } });
+  await assert.rejects(f.ask({ ...f.request, sources: [{ path: f.audio, start: 0, end: 1 }, { path: f.audio }] }), /source-2.*Base64.*maxEncodedAudioBytes.*0 uploads/);
   assert.equal(f.calls.length, 0);
   assert.deepEqual(await readdir(f.temporaryRoot), []);
 });
@@ -196,7 +196,7 @@ test('reports missing configuration, credentials and reserved request parameters
   await assert.rejects(f.ask(f.request), /Configure/);
   await f.configure();
   delete f.env.AUDIO_TEST_KEY;
-  await assert.rejects(f.ask(f.request), /AUDIO_TEST_KEY/);
+  assert.match((await f.ask(f.request)).batches[0].error!, /AUDIO_TEST_KEY/);
   f.env.AUDIO_TEST_KEY = 'secret-only-in-header';
   for (const requestParams of [{ messages: [] }, { stream: true }, { tools: [] }]) {
     await f.configure({ requestParams });
@@ -208,12 +208,11 @@ test('reports missing configuration, credentials and reserved request parameters
 test('reports HTTP failure without leaking its body, retrying or caching a failed answer', async (t) => {
   const f = await fixture(t);
   f.respond(async () => new Response(`${f.env.AUDIO_TEST_KEY} ${f.original.toString('base64')}`, { status: 429 }));
-  await assert.rejects(f.ask(f.request), (error: Error) => {
-    assert.match(error.message, /HTTP 429/);
-    assert.equal(error.message.includes(f.env.AUDIO_TEST_KEY!), false);
-    assert.equal(error.message.includes(f.original.toString('base64')), false);
-    return true;
-  });
+  const failed = await f.ask(f.request);
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.batches[0].error!, /HTTP 429/);
+  assert.equal(JSON.stringify(failed).includes(f.env.AUDIO_TEST_KEY!), false);
+  assert.equal(JSON.stringify(failed).includes(f.original.toString('base64')), false);
   assert.equal(f.calls.length, 1);
   f.respond(async () => completion('Recovered answer'));
   assert.equal((await f.ask(f.request)).answer, 'Recovered answer');
@@ -230,7 +229,7 @@ test('requires a complete text answer rather than treating invalid JSON, tool ca
   ];
   for (const reply of replies) {
     f.respond(async () => reply());
-    await assert.rejects(f.ask(f.request), /Audio service/);
+    assert.match((await f.ask(f.request)).batches[0].error!, /Audio service/);
   }
   f.respond(async () => completion());
   assert.equal((await f.ask(f.request)).cache.hit, false);
@@ -259,7 +258,9 @@ test('cancels an in-flight request, removes temporary audio, and leaves the ques
     return completion();
   });
   const request = { ...f.request, sources: [{ path: f.audio, start: 1, end: 2 }] };
-  await assert.rejects(f.ask(request, { signal: controller.signal }), /cancelled.*charged/);
+  const cancelled = await f.ask(request, { signal: controller.signal });
+  assert.equal(cancelled.status, 'failed');
+  assert.match(cancelled.batches[0].error!, /cancelled.*charged/);
   assert.deepEqual(await readdir(f.temporaryRoot), []);
   f.respond(async () => completion());
   assert.equal((await f.ask(request)).cache.hit, false);
@@ -273,9 +274,204 @@ test('applies the total deadline to a slow response', async (t) => {
     await delay(10000, undefined, { signal: call.init.signal! });
     return completion();
   });
-  await assert.rejects(f.ask(f.request), /timed out.*charged/);
+  const timedOut = await f.ask(f.request);
+  assert.equal(timedOut.status, 'failed');
+  assert.match(timedOut.batches[0].error!, /timed out.*charged/);
   assert.equal(f.calls.length, 1);
   assert.deepEqual(await readdir(f.temporaryRoot), []);
+});
+
+test('clamps finite requested ranges to source bounds and preserves the original request', async (t) => {
+  const f = await fixture(t);
+  const result = await f.ask({ ...f.request, sources: [{ path: f.audio, start: -10, end: 20 }, { path: f.audio, end: 1.5 }] });
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.sources[0].requested, { start: -10, end: 20 });
+  assert.equal(result.sources[0].start, 0);
+  assert.equal(result.sources[0].end, 3);
+  assert.equal(result.sources[0].submitted.transformed, false);
+  assert.equal(result.sources[1].start, 0);
+  assert.equal(result.sources[1].end, 1.5);
+  const content = f.calls[0].body.messages[0].content;
+  assert.deepEqual(Buffer.from(content[1].input_audio.data.split(',')[1], 'base64'), f.original);
+});
+
+test('batches whole sources at the Base64 boundary, preserving global IDs and per-batch cache', async (t) => {
+  const f = await fixture(t);
+  const bytes = 4 * Math.ceil(f.original.length / 3);
+  await f.configure({ limits: { maxEncodedAudioBytes: bytes * 2 } });
+  const request = { ...f.request, sources: Array.from({ length: 5 }, () => ({ path: f.audio })) };
+  let active = 0;
+  f.respond(async () => {
+    assert.equal(active++, 0);
+    await delay(5);
+    active--;
+    return completion(`Answer ${f.calls.length}`);
+  });
+  const result = await f.ask(request);
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.batches.map(b => b.sourceIds), [['source-1', 'source-2'], ['source-3', 'source-4'], ['source-5']]);
+  assert.deepEqual(result.batches.map(b => b.encodedAudioBytes), [bytes * 2, bytes * 2, bytes]);
+  assert.equal(f.calls.length, 3);
+  for (const [index, call] of f.calls.entries()) {
+    const content = call.body.messages[0].content;
+    assert.deepEqual(content.filter((c: any) => c.type === 'text').slice(0, -1).map((c: any) => c.text.split(':')[0]), result.batches[index].sourceIds);
+    assert.equal(content.at(-1).text, request.question);
+  }
+  assert.equal(result.usage?.totalTokens, 126);
+  delete f.env.AUDIO_TEST_KEY;
+  const cached = await f.ask(request);
+  assert.equal(cached.cache.hit, true);
+  assert.ok(cached.batches.every(b => b.status === 'completed' && b.cache?.hit));
+  assert.equal(f.calls.length, 3);
+});
+
+test('accepts a single source larger than 3 MB within its configured upload budget', async (t) => {
+  const f = await fixture(t);
+  const path = join(f.root, 'large.wav');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=duration=40', '-ar', '44100', path]);
+  const result = await f.ask({ ...f.request, sources: [{ path }] });
+  assert.equal(result.status, 'completed');
+  assert.ok(result.sources[0].submitted.bytes > 3000000);
+  assert.equal(f.calls.length, 1);
+});
+
+test('stops after a failed batch, reports coverage, and reuses completed batches on explicit retry', async (t) => {
+  const f = await fixture(t);
+  await f.configure({ limits: { maxEncodedAudioBytes: 4 * Math.ceil(f.original.length / 3) } });
+  const request = { ...f.request, sources: Array.from({ length: 3 }, () => ({ path: f.audio })) };
+  f.respond(async () => f.calls.length === 2 ? new Response('', { status: 503 }) : completion());
+  const partial = await f.ask(request);
+  assert.equal(partial.status, 'partial');
+  assert.deepEqual(partial.batches.map(b => b.status), ['completed', 'failed', 'not_sent']);
+  assert.match(partial.batches[1].error!, /HTTP 503/);
+  assert.equal(f.calls.length, 2);
+  const saved = JSON.parse(await readFile(partial.cache.reportPath!, 'utf8'));
+  assert.equal(saved.result.status, 'partial');
+  f.respond(async () => completion());
+  const retry = await f.ask(request);
+  assert.equal(retry.status, 'completed');
+  assert.equal(retry.batches[0].cache?.hit, true);
+  assert.equal(f.calls.length, 4);
+});
+
+test('keeps one total deadline across batches and preserves completed work at timeout', async (t) => {
+  const f = await fixture(t);
+  await f.configure({ limits: { timeoutMs: 1800, maxEncodedAudioBytes: 4 * Math.ceil(f.original.length / 3) } });
+  const request = { ...f.request, sources: Array.from({ length: 3 }, () => ({ path: f.audio })) };
+  f.respond(async (call) => {
+    await delay(1000, undefined, { signal: call.init.signal! });
+    return completion();
+  });
+  const result = await f.ask(request);
+  assert.equal(result.status, 'partial');
+  assert.deepEqual(result.batches.map(b => b.status), ['completed', 'failed', 'not_sent']);
+  assert.match(result.batches[1].error!, /timed out.*charged/);
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(await readdir(f.temporaryRoot), []);
+});
+
+test('copies MP3 frames with outward coverage and reports the audible source-time mapping', async (t) => {
+  const f = await fixture(t);
+  const path = join(f.root, 'original.mp3');
+  execFileSync('ffmpeg', ['-v', 'error', '-i', f.audio, '-c:a', 'libmp3lame', '-b:a', '64k', path]);
+  const result = await f.ask({ ...f.request, sources: [{ path, start: 1.013, end: 2.017 }] });
+  const source = result.sources[0];
+  assert.equal(source.start, 1.013);
+  assert.equal(source.end, 2.017);
+  assert.ok(source.submitted.start <= source.start);
+  assert.ok(source.submitted.end >= source.end);
+  assert.ok(source.start - source.submitted.start < 0.5);
+  assert.ok(source.submitted.end - source.end < 0.5);
+  const item = f.calls[0].body.messages[0].content.find((c: any) => c.type === 'input_audio');
+  const clip = join(f.root, 'submitted.mp3');
+  await writeFile(clip, Buffer.from(item.input_audio.data.split(',')[1], 'base64'));
+  const packets = (file: string) => JSON.parse(execFileSync('ffprobe', [
+    '-v', 'error', '-select_streams', 'a:0', '-show_packets', '-show_entries', 'packet=data_hash',
+    '-show_data_hash', 'sha256', '-of', 'json', file,
+  ], { encoding: 'utf8' })).packets.map((p: any) => p.data_hash);
+  const originalHashes = packets(path);
+  const copiedHashes = packets(clip);
+  const offset = originalHashes.indexOf(copiedHashes[0]);
+  assert.ok(offset >= 0);
+  assert.deepEqual(copiedHashes, originalHashes.slice(offset, offset + copiedHashes.length));
+  const decode = (file: string) => execFileSync('ffmpeg', ['-v', 'error', '-i', file, '-f', 's16le', '-ac', '1', '-ar', '8000', 'pipe:1']);
+  const decoded = decode(clip);
+  const originalPcm = decode(path);
+  const sourceOffset = Math.round(source.submitted.start * 8000);
+  const clipOffset = Math.round((source.start - source.submitted.start) * 8000);
+  assert.deepEqual(decoded.subarray(clipOffset * 2, (clipOffset + 2000) * 2), originalPcm.subarray((sourceOffset + clipOffset) * 2, (sourceOffset + clipOffset + 2000) * 2));
+  assert.ok(Math.abs(decoded.length / 16000 - source.submitted.duration) < 0.001);
+  assert.ok(Math.abs(source.submitted.end - source.submitted.start - source.submitted.duration) < 0.00001);
+  assert.match(f.calls[0].body.messages[0].content[0].text, new RegExp(String(source.submitted.start).replace('.', '\\.')));
+});
+
+test('cached batch reuse keeps the original expiry time', async (t) => {
+  const f = await fixture(t);
+  const first = await f.ask(f.request);
+  const path = first.batches[0].cache!.reportPath!;
+  const entry = JSON.parse(await readFile(path, 'utf8'));
+  entry.result.createdAt = new Date(Date.now() - 60000).toISOString();
+  await writeFile(path, JSON.stringify(entry));
+  assert.equal((await f.ask(f.request)).cache.hit, true);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).result.createdAt, entry.result.createdAt);
+  await f.configure({ limits: { cacheMaxAgeMs: 30000 } });
+  assert.equal((await f.ask(f.request)).cache.hit, false);
+  assert.equal(f.calls.length, 2);
+});
+
+test('preserves 24-bit PCM samples when cropping WAV', async (t) => {
+  const f = await fixture(t);
+  const original = join(f.root, '24bit.wav');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=duration=3', '-c:a', 'pcm_s24le', original]);
+  const decode = (args: string[], input?: Buffer) => execFileSync('ffmpeg', ['-v', 'error', ...args, '-f', 's24le', 'pipe:1'], { input });
+  const result = await f.ask({ ...f.request, sources: [{ path: original, start: 1, end: 2 }] });
+  assert.equal(result.status, 'completed');
+  const audio = f.calls[0].body.messages[0].content.find((c: any) => c.type === 'input_audio');
+  const wav = Buffer.from(audio.input_audio.data.split(',')[1], 'base64');
+  assert.deepEqual(decode(['-i', 'pipe:0'], wav), decode(['-i', original, '-ss', '1', '-t', '1']));
+});
+
+test('covers MP3 requests at both source boundaries and preserves whole-file bytes', async (t) => {
+  const f = await fixture(t);
+  const path = join(f.root, 'bounds.mp3');
+  execFileSync('ffmpeg', ['-v', 'error', '-i', f.audio, '-c:a', 'libmp3lame', path]);
+  const result = await f.ask({ ...f.request, sources: [
+    { path, start: -1, end: 1.01 }, { path, start: 2.01, end: 100 }, { path, end: 100 },
+  ] });
+  assert.equal(result.status, 'completed');
+  for (const source of result.sources) {
+    assert.ok(source.submitted.start <= source.start + 0.0001);
+    assert.ok(source.submitted.end >= source.end - 0.0001);
+  }
+  const content = f.calls[0].body.messages[0].content.filter((c: any) => c.type === 'input_audio');
+  assert.deepEqual(Buffer.from(content[2].input_audio.data.split(',')[1], 'base64'), await readFile(path));
+});
+
+test('uses audible MP3 duration when clamping beyond an approximate container duration', async (t) => {
+  const f = await fixture(t);
+  const path = join(f.root, 'unindexed.mp3');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=duration=4', '-c:a', 'libmp3lame', '-q:a', '4', '-write_xing', '0', path]);
+  const result = await f.ask({ ...f.request, sources: [{ path, start: -1, end: 100 }] });
+  assert.equal(result.status, 'completed');
+  const decoded = execFileSync('ffmpeg', ['-v', 'error', '-i', path, '-f', 's16le', '-ac', '1', '-ar', '44100', 'pipe:1']);
+  assert.ok(Math.abs(result.sources[0].end - decoded.length / 88200) < 0.0001);
+});
+
+test('maps copied MP3 frames across sample rates, VBR and repeated silent packets', async (t) => {
+  const f = await fixture(t);
+  for (const [rate, sound, codecArgs] of [
+    [44100, 'sine=duration=4', ['-b:a', '128k']],
+    [48000, 'sine=duration=4', ['-q:a', '3']],
+    [8000, 'anullsrc=r=8000:cl=mono:d=4', ['-b:a', '32k']],
+  ] as const) {
+    const path = join(f.root, `${rate}.mp3`);
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', sound, '-ar', String(rate), '-c:a', 'libmp3lame', ...codecArgs, path]);
+    const result = await f.ask({ ...f.request, sources: [{ path, start: 1.013, end: 2.017 }] });
+    assert.equal(result.status, 'completed');
+    const source = result.sources[0];
+    assert.ok(source.submitted.start <= source.start);
+    assert.ok(source.submitted.end >= source.end);
+  }
 });
 
 test('does not follow an HTTP redirect to another upload destination', async (t) => {
@@ -293,6 +489,6 @@ test('does not follow an HTTP redirect to another upload destination', async (t)
     }));
   }
   await f.configure({ baseUrl: `http://127.0.0.1:${(redirect.address() as { port: number }).port}` });
-  await assert.rejects(f.askWithRealHttp(f.request), /connection failed/);
+  assert.match((await f.askWithRealHttp(f.request)).batches[0].error!, /connection failed/);
   assert.equal(redirectedCalls, 0);
 });

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import type { AudioConfig } from './config.ts';
 import { isObject } from './config.ts';
 import type { PreparedSource } from './media.ts';
@@ -52,11 +54,18 @@ export async function askAudio(
 ): Promise<ModelAnswer> {
   signal.throwIfAborted();
   const content: Record<string, unknown>[] = [];
-  const encoded = sources.map((source) => source.data.toString('base64'));
+  const encoded: string[] = [];
+  for (const source of sources) {
+    const data = await readFile(source.path, { signal });
+    if (createHash('sha256').update(data).digest('hex') !== source.record.submitted.sha256) {
+      throw new Error(`${source.record.id} changed after preparation; retry with a stable file.`);
+    }
+    encoded.push(data.toString('base64'));
+  }
   for (const [index, source] of sources.entries()) {
-    const { id, start, end } = source.record;
+    const { id, start, end, submitted } = source.record;
     content.push(
-      { type: 'text', text: `${id}: this clip's 0 seconds corresponds to ${start} seconds in its source; the requested source range is [${start}, ${end}). Identify the source and time basis when giving timestamps.` },
+      { type: 'text', text: `${id}: clip 0 seconds = source ${submitted.start} seconds. Submitted source interval [${submitted.start}, ${submitted.end}); effective requested interval [${start}, ${end}). Identify sources and use source seconds for timestamps.` },
       { type: 'input_audio', input_audio: { data: `data:${source.mimeType};base64,${encoded[index]}`, format: source.record.submitted.format } },
     );
   }
