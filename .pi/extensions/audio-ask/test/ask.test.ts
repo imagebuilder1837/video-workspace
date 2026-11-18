@@ -342,6 +342,7 @@ test('Pi tools execute against a local HTTP endpoint and preserve structured res
   const responses = await ask.execute('responses', f.request, undefined, undefined, context);
   assert.equal(responses.isError, false);
   assert.match(responses.content[0].text, /A clear piano entry/);
+  assert.doesNotMatch(responses.content[0].text, /^Follow up with audio_ask: /m);
   assert.equal(responses.structuredContent.consultation.batches[0].usage?.inputTokens, 30);
   assert.equal(requests[0].store, false);
   assert.equal(requests[0].max_output_tokens, 512);
@@ -359,7 +360,11 @@ test('Pi tools execute against a local HTTP endpoint and preserve structured res
   const follow = (question: string, continueFrom = parentPath, allowContinuation?: boolean) => ask.execute(
     'follow', { title: 'Piano detail', question, continueFrom, allowContinuation }, undefined, undefined, context,
   );
-  const child = await follow('When does the piano enter?');
+  const example = parent.content[0].text.match(/^Follow up with audio_ask: (.+)$/m);
+  assert.ok(example);
+  const child = await ask.execute('follow', {
+    ...JSON.parse(example[1]), title: 'Piano detail', question: 'When does the piano enter?',
+  }, undefined, undefined, context);
   assert.equal(child.isError, false);
   assert.deepEqual(requests[2], {
     model: 'test-audio', max_output_tokens: 512, stream: false, store: true,
