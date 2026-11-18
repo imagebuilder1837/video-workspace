@@ -89,15 +89,30 @@ export function createAudioAsk(
     const progress = (text: string) => { options.onProgress?.(text); signal.throwIfAborted(); };
     const checkpoint = () => {
       record.updatedAt = new Date().toISOString();
-      return saveRecord(archiveRoot, record);
+      return saveRecord(archiveRoot, structuredClone(record));
     };
-    // Check archive access before starting paid work; each batch then checkpoints its answer.
-    let archive = await checkpoint();
-    if (!archive.saved) { record.status = 'failed'; return { consultation: record, archive }; }
-    const persist = async () => (archive = await checkpoint()).saved;
-    let scratch: string | undefined;
+    // Coalesce answers that arrive while the archive is being written.
+    let backup: Promise<void> | undefined;
+    let backupPending = false;
+    const backUp = () => {
+      backupPending = true;
+      backup ??= (async () => {
+        try {
+          while (backupPending) {
+            backupPending = false;
+            await checkpoint();
+          }
+        } finally { backup = undefined; }
+      })();
+    };
+    const inFlight = new Set<Promise<void>>();
     let stopped = false;
-    let pending: PreparedGroup[] = [];
+    const { maxConcurrentRequests, maxItemsPerRequest, maxEncodedAudioBytes } = config.limits;
+    const waitForSlot = async () => {
+      if (!stopped && maxConcurrentRequests && inFlight.size >= maxConcurrentRequests) await Promise.race(inFlight);
+      signal.throwIfAborted();
+    };
+    let scratch: string | undefined;
     const cleanup = async (directory: string) => {
       try { await rm(directory, { recursive: true, force: true }); } catch (error) {
         record.warnings.push(`Temporary audio cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -122,58 +137,63 @@ export function createAudioAsk(
           for (const item of items) item.status = 'completed';
           if (store && !response.requestId) record.warnings.push('The service returned no response ID for continuation.');
         } else {
+          stopped = true;
           for (const item of items) { item.status = 'failed'; item.error = response.error; }
         }
+        if (batch) backUp();
       } finally {
         for (const item of group) await cleanup(item.directory);
       }
-      const saved = await persist();
-      return saved && entry.status === 'completed';
     };
     try {
       if (parent) {
         await requestGroups(record.items.map(item => item.id), []);
       } else {
         scratch = await mkdtemp(join(dependencies.temporaryRoot ?? tmpdir(), 'pi-audio-ask-'));
+        let pending: PreparedGroup[] = [];
         const dispatch = async () => {
-          if (!pending.length) return true;
+          if (!pending.length) return;
+          await waitForSlot();
+          if (stopped) return;
           const group = pending;
           pending = [];
-          return requestGroups(group.map(item => item.id), group);
+          const task = requestGroups(group.map(item => item.id), group).finally(() => inFlight.delete(task));
+          inFlight.add(task);
         };
         for (const [index, item] of record.items.entries()) {
+          await waitForSlot();
+          if (stopped) break;
           progress(`Preparing ${item.id} (${index + 1}/${record.items.length})`);
           const directory = join(scratch, item.id);
           await mkdir(directory);
           let prepared: PreparedGroup;
           try {
-            prepared = await prepareItem(item, directory, config.limits.maxEncodedAudioBytes, cwd, signal);
+            prepared = await prepareItem(item, directory, maxEncodedAudioBytes, cwd, signal);
           } catch (error) {
             signal.throwIfAborted();
             item.status = 'failed'; item.error = error instanceof Error ? error.message : String(error);
             await cleanup(directory);
-            if (!await persist()) { stopped = true; break; }
             continue;
           }
           const bytes = pending.reduce((sum, p) => sum + p.bytes, 0);
-          if (pending.length && bytes + prepared.bytes > config.limits.maxEncodedAudioBytes) {
-            if (!await dispatch()) { stopped = true; break; }
-          }
+          if (pending.length && bytes + prepared.bytes > maxEncodedAudioBytes) await dispatch();
+          if (stopped) break;
           pending.push(prepared);
-          if (pending.length >= config.limits.maxItemsPerRequest && !await dispatch()) { stopped = true; break; }
+          if (maxItemsPerRequest && pending.length >= maxItemsPerRequest) await dispatch();
         }
         if (!stopped) await dispatch();
       }
     } catch (error) {
       if (!signal.aborted) record.warnings.push(error instanceof Error ? error.message : String(error));
     } finally {
+      await Promise.all(inFlight);
       if (scratch) await cleanup(scratch);
     }
     const completed = record.items.filter(item => item.status === 'completed').length;
     record.status = signal.aborted ? 'cancelled' : completed === record.items.length ? 'completed' : completed ? 'partial' : 'failed';
-    // Ready means prepared but unsent; preserve this distinction when a preceding batch stops the run.
-    if (archive.saved) await persist();
-    return { consultation: record, archive };
+    backupPending = false;
+    await backup;
+    return { consultation: record, archive: await checkpoint() };
   }
   return {
     ask: (request: AskRequest, options: CallOptions = {}) => run(request, false, options),

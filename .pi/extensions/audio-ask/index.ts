@@ -20,9 +20,9 @@ function formatResult(result: AskResult) {
     `${record.title} · ${record.status} · ${record.model}`,
     `Record: ${archive.recordPath}`, `Report: ${archive.reportPath}`, '',
   ];
-  if (archive.error) lines.push(archive.error, '');
+  if (archive.error) lines.push(`Archive warning: ${archive.error}`, '');
   if (record.continuation) lines.push(`Continues ${record.continuation.id}; audio ranges below are inherited.`, '');
-  if (record.allowContinuation && record.status === 'completed' && record.batches[0]?.requestId && archive.saved) {
+  if (record.allowContinuation && record.status === 'completed' && record.batches[0]?.requestId && archive.recordSaved) {
     const example = { title: '<follow-up title>', question: '<follow-up question>', continueFrom: archive.recordPath };
     lines.push(`Follow up with audio_ask: ${JSON.stringify(example)}`, '');
   }
@@ -44,7 +44,8 @@ function formatResult(result: AskResult) {
   const full = lines.join('\n');
   const head = full.split('\n').slice(0, 2000).join('\n');
   const text = Buffer.from(head).subarray(0, 48000).toString('utf8').replace(/\uFFFD$/, '');
-  return text.length < full.length ? `${text}\n[Truncated. Full report: ${archive.reportPath}; archive saved: ${archive.saved}]` : text;
+  const report = archive.saved ? ` Full report: ${archive.reportPath}` : '';
+  return text.length < full.length ? `${text}\n[Truncated.${report}]` : text;
 }
 
 export function createTools(root: string) {
@@ -53,8 +54,8 @@ export function createTools(root: string) {
     name: batch ? 'audio_ask_batch' : 'audio_ask',
     label: batch ? 'Pi Audio Ask · Batch' : 'Pi Audio Ask',
     description: batch
-      ? 'Ask a shared free-form question about many audio groups. Automatically packs whole groups into sequential requests within configured limits. Returns each batch answer with its sources and saves a searchable local archive. Text output is capped at 48 KB / 2000 lines; the linked report contains the full result.'
-      : 'Choose exactly one: use sources to ask an audio model about local audio ranges together in one request, or continueFrom to ask a new question about audio from a saved Responses consultation. To add new audio, start a new consultation with sources and carry relevant prior findings in question. Saves a searchable local archive. Text output is capped at 48 KB / 2000 lines; the linked report contains the full result.',
+      ? 'Ask a shared free-form question about many audio groups. Automatically packs whole groups into requests and sends them concurrently within configured limits. Returns each batch answer with its sources and attempts to save a searchable local archive. Text output is capped at 48 KB / 2000 lines; the archive report, when saved, contains the full result.'
+      : 'Choose exactly one: use sources to ask an audio model about local audio ranges together in one request, or continueFrom to ask a new question about audio from a saved Responses consultation. To add new audio, start a new consultation with sources and carry relevant prior findings in question. Attempts to save a searchable local archive. Text output is capped at 48 KB / 2000 lines; the archive report, when saved, contains the full result.',
     promptSnippet: batch ? 'Ask about many audio groups with automatic request batching' : 'Explore actual sound, discuss creative choices and follow up on audio details',
     promptGuidelines: batch ? [] : [
       'Use audio_ask for focused listening and follow-up; use audio_ask_batch for large audio collections.',
@@ -93,7 +94,7 @@ export function createTools(root: string) {
       const options = { cwd: ctx.cwd, signal, onProgress: (phase: string) => onUpdate?.({ content: [textBlock(phase)], details: undefined }) };
       const result = await (batch ? engine.batch(params as BatchRequest, options) : engine.ask(params as AskRequest, options));
       return {
-        isError: result.consultation.status !== 'completed' || !result.archive.saved,
+        isError: result.consultation.status !== 'completed',
         content: [textBlock(formatResult(result))], details: undefined, structuredContent: result,
       };
     },

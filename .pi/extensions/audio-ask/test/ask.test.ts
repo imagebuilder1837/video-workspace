@@ -97,19 +97,12 @@ test('joint consultations send actual selected audio, stay fresh, and archive se
   assert.equal(f.calls.length, 2);
 });
 
-test('batch packing keeps multi-excerpt groups together, skips local problems and persists before the next request', async t => {
+test('batch packing keeps multi-excerpt groups together and skips local problems', async t => {
   const f = await fixture(t);
   const bytes = 4 * Math.ceil(f.original.length / 3);
   await f.configure({ limits: { maxEncodedAudioBytes: bytes * 2, maxItemsPerRequest: 2 } });
   const idOf = (call: Call) => call.body.messages[0].content[0].text;
-  f.respond(async call => {
-    if (f.calls.length > 1) {
-      const records = await readdir(join(f.root, '.media/audio-ask/records'));
-      const saved = JSON.parse(await readFile(join(f.root, '.media/audio-ask/records', records[0], 'record.json'), 'utf8'));
-      assert.equal(saved.batches[0].status, 'completed');
-    }
-    return completion(idOf(call));
-  });
+  f.respond(async call => completion(idOf(call)));
   const result = await f.engine.batch({ title: 'Library listening', question: 'Describe the musical development.', items: [
     { label: 'A', sources: [{ path: f.audio }, { path: f.audio }] },
     { sources: [{ path: join(f.root, 'missing.wav') }] },
@@ -119,12 +112,69 @@ test('batch packing keeps multi-excerpt groups together, skips local problems an
   assert.deepEqual(result.consultation.batches.map(b => b.itemIds), [['item-1'], ['item-3', 'item-4'], ['item-5']]);
   assert.match(result.consultation.items[1].error!, /ENOENT/);
   assert.equal(f.calls[0].body.messages[0].content.filter((p: any) => p.type === 'input_audio').length, 2);
-  assert.match(idOf(f.calls[1]), /item-3, item-4/);
+  assert.ok(f.calls.some(call => /item-3, item-4/.test(idOf(call))));
+});
+
+test('omitted and zero limits allow larger groups and overlapping requests', async t => {
+  const f = await fixture(t);
+  const bytes = 4 * Math.ceil(f.original.length / 3);
+  const items = Array.from({ length: 19 }, () => ({ sources: f.request.sources }));
+  for (const overrides of [{}, { maxItemsPerRequest: 0, maxConcurrentRequests: 0 }]) {
+    await f.configure({ limits: { maxEncodedAudioBytes: bytes * 9, timeoutMs: 3000, ...overrides }, retry: { maxAttempts: 1 } });
+    const allStarted = Promise.withResolvers<void>();
+    let active = 0;
+    f.respond(async call => {
+      if (++active === 3) allStarted.resolve();
+      await Promise.race([allStarted.promise, delay(10000, undefined, { signal: call.init.signal, ref: false })]);
+      return completion();
+    });
+    const result = await f.engine.batch({ ...f.request, items });
+    assert.equal(result.consultation.status, 'completed');
+    assert.deepEqual(result.consultation.batches.map(batch => batch.itemIds.length), [9, 9, 1]);
+  }
+  for (const key of ['maxItemsPerRequest', 'maxConcurrentRequests']) {
+    await f.configure({ limits: { [key]: -1 } });
+    await assert.rejects(f.engine.batch({ ...f.request, items }), new RegExp(key));
+  }
+});
+
+test('a fatal batch stops new submissions and preserves out-of-order in-flight answers', async t => {
+  const f = await fixture(t);
+  await f.configure({ limits: { maxItemsPerRequest: 1, maxConcurrentRequests: 2, timeoutMs: 3000 }, retry: { maxAttempts: 1 } });
+  const records = join(f.root, '.media/audio-ask/records');
+  await mkdir(records, { recursive: true });
+  f.respond(async call => {
+    const id = call.body.messages[0].content[0].text;
+    if (id.includes('item-1')) {
+      // Keep the first batch in flight until the third batch's failure is observed.
+      while (true) {
+        const [dir] = await readdir(records);
+        if (dir) {
+          const json = await readFile(join(records, dir, 'record.json'), 'utf8').catch(error => {
+            if (error.code !== 'ENOENT') throw error;
+          });
+          if (json && JSON.parse(json).batches[2]?.status === 'failed') break;
+        }
+        await delay(20, undefined, { signal: call.init.signal });
+      }
+      return completion('First answer');
+    }
+    if (id.includes('item-2')) return completion('Second answer');
+    return new Response('', { status: 401 });
+  });
+  const items = Array.from({ length: 4 }, () => ({ sources: f.request.sources }));
+  const result = await f.engine.batch({ ...f.request, items });
+  assert.equal(result.consultation.status, 'partial');
+  assert.equal(f.calls.length, 3);
+  assert.deepEqual(result.consultation.batches.map(batch => batch.answer), ['First answer', 'Second answer', undefined]);
+  assert.equal(result.consultation.items[3].status, 'pending');
+  const saved = JSON.parse(await readFile(result.archive.recordPath, 'utf8'));
+  assert.deepEqual(saved.batches, result.consultation.batches);
 });
 
 test('transient errors retry within each request deadline; fatal failures and cancellation preserve remaining work', async t => {
   const f = await fixture(t);
-  await f.configure({ limits: { timeoutMs: 50, maxItemsPerRequest: 1 } });
+  await f.configure({ limits: { timeoutMs: 50, maxItemsPerRequest: 1, maxConcurrentRequests: 1 } });
   f.respond(async call => {
     if (f.calls.length === 1) {
       await writeFile(f.audio, 'changed after the batch was sent');
@@ -154,43 +204,56 @@ test('transient errors retry within each request deadline; fatal failures and ca
   assert.deepEqual(await readdir(f.temporaryRoot), []);
 });
 
-test('archive failure returns the obtained answer and stops further submissions', async t => {
+test('cancelling a batch call aborts all in-flight requests and leaves unsent items', async t => {
   const f = await fixture(t);
-  await f.configure({ limits: { maxItemsPerRequest: 1 } });
-  f.respond(async () => {
-    const dir = join(f.root, '.media/audio-ask/records');
-    const [entry] = await readdir(dir);
-    await rm(join(dir, entry), { recursive: true });
-    await writeFile(join(dir, entry), 'blocked');
-    return completion();
+  await f.configure({ limits: { maxItemsPerRequest: 1, maxConcurrentRequests: 2 }, retry: { maxAttempts: 1 } });
+  const controller = new AbortController();
+  const aborted: boolean[] = [];
+  f.respond(async call => {
+    if (f.calls.length === 2) controller.abort();
+    try {
+      await delay(2000, undefined, { signal: call.init.signal });
+      return completion();
+    } finally {
+      aborted.push(call.init.signal!.aborted);
+    }
   });
+  const items = Array.from({ length: 3 }, () => ({ sources: f.request.sources }));
+  const result = await f.engine.batch({ ...f.request, items }, { signal: controller.signal });
+  assert.equal(result.consultation.status, 'cancelled');
+  assert.deepEqual(aborted, [true, true]);
+  assert.equal(result.consultation.items[2].status, 'pending');
+  assert.deepEqual(await readdir(f.temporaryRoot), []);
+});
+
+test('a blocked archive still returns all batch answers with a warning', async t => {
+  const f = await fixture(t);
+  await f.configure({ limits: { maxItemsPerRequest: 1, maxConcurrentRequests: 1 } });
+  await mkdir(join(f.root, '.media'));
+  await writeFile(join(f.root, '.media/audio-ask'), 'blocked');
   const result = await f.engine.batch({ title: 'Save failure', question: 'Listen.', items: Array.from({ length: 2 }, () => ({ sources: [{ path: f.audio }] })) });
-  assert.equal(f.calls.length, 1);
-  assert.equal(result.consultation.status, 'partial');
-  assert.match(result.consultation.batches[0].answer!, /bass/);
+  assert.equal(f.calls.length, 2);
+  assert.equal(result.consultation.status, 'completed');
+  assert.ok(result.consultation.batches.every(batch => batch.answer?.includes('bass')));
   assert.equal(result.archive.saved, false);
   assert.equal(result.archive.recordSaved, false);
   assert.match(result.archive.error!, /Archive save failed/);
 });
 
-test('a failed archive view keeps the saved answer and stops further submissions', async t => {
+test('a failed archive view leaves a complete consultation record available for rebuilding', async t => {
   const f = await fixture(t);
-  await f.configure({ limits: { maxItemsPerRequest: 1 } });
+  await f.configure({ limits: { maxItemsPerRequest: 1, maxConcurrentRequests: 1 } });
   const archive = join(f.root, '.media/audio-ask');
   const index = join(archive, 'index.md');
-  f.respond(async () => {
-    await rm(index);
-    await mkdir(index);
-    return completion();
-  });
+  await mkdir(index, { recursive: true });
   const result = await f.engine.batch({ title: 'View failure', question: 'Listen.', items: Array.from({ length: 2 }, () => ({ sources: [{ path: f.audio }] })) });
-  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls.length, 2);
   assert.equal(result.archive.saved, false);
   assert.equal(result.archive.recordSaved, true);
   assert.match(result.archive.error!, /record saved.*rebuild/i);
-  assert.deepEqual(result.consultation.items.map(item => item.status), ['completed', 'pending']);
   const record = JSON.parse(await readFile(result.archive.recordPath, 'utf8'));
-  assert.equal(record.batches[0].answer, result.consultation.batches[0].answer);
+  assert.equal(record.status, 'completed');
+  assert.deepEqual(record.batches, result.consultation.batches);
   await rm(index, { recursive: true });
   await rebuildIndexes(archive);
   assert.match(await readFile(index, 'utf8'), /View failure/);
@@ -351,7 +414,13 @@ test('Pi tools execute against a local HTTP endpoint and preserve structured res
     type: 'input_audio', data: `data:audio/wav;base64,${f.original.toString('base64')}`, format: 'wav',
   });
 
+  const index = join(f.root, '.media/audio-ask/index.md');
+  await rm(index);
+  await mkdir(index);
   const parent = await ask.execute('parent', { ...f.request, allowContinuation: true }, undefined, undefined, context);
+  assert.equal(parent.isError, false);
+  assert.match(parent.content[0].text, /Archive warning: Consultation record saved/);
+  assert.equal(parent.structuredContent.archive.saved, false);
   assert.equal(requests[1].store, true);
   const parentPath = parent.structuredContent.archive.recordPath;
   const originalRecord = await readFile(parentPath, 'utf8');

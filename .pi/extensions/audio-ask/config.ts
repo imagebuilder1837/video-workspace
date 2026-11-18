@@ -9,7 +9,7 @@ export type AudioConfig = {
   apiKey?: string;
   apiKeyEnv?: string;
   requestParams: Record<string, unknown>;
-  limits: { timeoutMs: number; maxEncodedAudioBytes: number; maxItemsPerRequest: number };
+  limits: { timeoutMs: number; maxEncodedAudioBytes: number; maxItemsPerRequest: number; maxConcurrentRequests: number };
   retry: { maxAttempts: number; baseDelayMs: number };
 };
 
@@ -69,7 +69,9 @@ export async function loadConfig(root: string): Promise<AudioConfig> {
   if (!isObject(requestParams) || Object.keys(requestParams).some(key => reserved.has(key))) {
     throw new Error('requestParams accepts model options; Pi Audio Ask controls messages, model and tool execution.');
   }
-  const limits = numbers(raw.limits, { timeoutMs: 120000, maxEncodedAudioBytes: 8000000, maxItemsPerRequest: 8 });
+  const limits = numbers(raw.limits, {
+    timeoutMs: 120000, maxEncodedAudioBytes: 8000000, maxItemsPerRequest: 0, maxConcurrentRequests: 0,
+  }, ['maxItemsPerRequest', 'maxConcurrentRequests']);
   const retry = numbers(raw.retry, { maxAttempts: 3, baseDelayMs: 1000 }, ['baseDelayMs']);
   if (limits.timeoutMs > 2147483647 || retry.baseDelayMs > 2147483647) throw new Error('Timer values must fit a Node timer.');
   return {

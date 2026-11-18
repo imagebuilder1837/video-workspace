@@ -27,11 +27,11 @@ npx skills add heygen-com/hyperframes
 
 `api` 沿用 Pi 的协议名：`openai-completions` 对应 `/chat/completions`，`openai-responses` 对应 `/responses`。两种协议均使用 WAV／MP3 与非流式文本回复。Responses 按[百炼 Qwen 音频契约](https://help.aliyun.com/zh/model-studio/qwen-omni#qwen38-responses)发送扁平 `input_audio` 和完整 Data URI；Chat Completions 使用嵌套 `input_audio`，默认 Base64，按服务要求可选 `"audioDataFormat": "data-url"`。示例使用 Qwen3.8-Omni-Flash；`apiKey` 留空时从 `PI_AUDIO_ASK_API_KEY` 读取。协议参数放在 `requestParams`，例如 Responses 的 `max_output_tokens`。
 
-`maxEncodedAudioBytes` 计量每次请求全部音频的 Base64 字节总量，约为文件字节的 4/3；配置时为 HTTP 请求中的问题、JSON 和来源说明预留容量。`maxItemsPerRequest` 控制每批完整素材组的数量。`timeoutMs` 按远端请求计时，批量处理逐批准备与保存，可随时取消。
+`limits.maxEncodedAudioBytes` 计量每次请求全部音频的 Base64 字节总量，约为文件字节的 4/3；配置时为 HTTP 请求中的问题、JSON 和来源说明预留容量。`maxItemsPerRequest` 限制每批素材组数，`maxConcurrentRequests` 限制单次工具调用同时处理的批次数。两项省略或设为 `0` 表示不限，正整数启用对应上限。素材组保持完整，音频字节上限始终生效。
 
 完整 MP3／WAV 尽量原样提交，MP3 裁切复制压缩帧，PCM WAV 保留样本精度，其余格式转换为接口接受的音频。时间与档案约定见 [Pi Audio Ask 参考](../.agents/skills/audio-direction/references/pi-audio-ask.md)。
 
-每批先准备一次请求体，远端超时按每次发送及读取响应计时。暂时性故障按配置有限重试，等待时间优先采用服务的 `Retry-After`；本地素材问题按项反馈，远端持续故障时保存进度并停止后续提交。
+每批先准备一次请求体，`timeoutMs` 按每次发送及读取响应计时。暂时性故障按配置有限重试，等待时间优先采用服务的 `Retry-After`；本地素材问题按项反馈。远端请求最终失败时停止发新批次，在途批次继续收结果。主动取消会中止在途请求。
 
 档案位于工作台 `.media/audio-ask/`。保存与重建共用文件锁。异常退出遗留锁时，确认写入进程已结束，再移除错误中列出的 `.index.lock`。
 

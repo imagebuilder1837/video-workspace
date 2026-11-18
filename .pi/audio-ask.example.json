@@ -11,7 +11,8 @@
   "limits": {
     "timeoutMs": 600000,
     "maxEncodedAudioBytes": 9500000,
-    "maxItemsPerRequest": 8
+    "maxItemsPerRequest": 0,
+    "maxConcurrentRequests": 0
   },
   "retry": {
     "maxAttempts": 3,
