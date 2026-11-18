@@ -31,18 +31,17 @@ npx skills add heygen-com/hyperframes
 
 完整 MP3／WAV 尽量原样提交，MP3 裁切复制压缩帧，PCM WAV 保留样本精度，其余格式转换为接口接受的音频。时间与档案约定见 [Pi Audio Ask 参考](../.agents/skills/audio-direction/references/pi-audio-ask.md)。
 
-每批先准备一次请求体，远端超时按每次发送及读取响应计时。暂时性故障按配置有限重试，等待时间优先采用服务的 `Retry-After`；本地素材问题按项反馈，远端持续故障或归档失败时保存进度并停止后续提交。
+每批先准备一次请求体，远端超时按每次发送及读取响应计时。暂时性故障按配置有限重试，等待时间优先采用服务的 `Retry-After`；本地素材问题按项反馈，远端持续故障时保存进度并停止后续提交。
 
-档案位于工作台 `.media/audio-ask/`。完整 JSON 记录支持重建 Markdown 报告与索引；多个调用各自保存记录，共享索引通过文件锁协调更新。异常退出遗留锁时，确认写入进程已结束，再移除错误中列出的 `.index.lock`。
+档案位于工作台 `.media/audio-ask/`。保存与重建共用文件锁。异常退出遗留锁时，确认写入进程已结束，再移除错误中列出的 `.index.lock`。
 
 工作台根下的维护命令：
 
 ```sh
 node .pi/extensions/audio-ask/maintenance.ts rebuild
-node .pi/extensions/audio-ask/maintenance.ts migrate
 ```
 
-`rebuild` 从原始记录重建阅读视图。`migrate` 离线迁移旧配置与 `.cache/audio-understand/` 分析，合并已有引用关系中的批次副本；重复执行沿用已导入记录，旧分析文件原位保留。
+档案视图更新失败时，先处理错误提示中的原因，再运行 `rebuild` 修复。
 
 `npm run test:audio` 使用合成音频、本地文件和 HTTP 替身验证公共接口行为，沿用 Node 原生 TypeScript 支持。Pi 实际加载、真实模型听音质量及创作中的主动咨询分别验收。
 

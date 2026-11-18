@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { AudioConfig } from './config.ts';
 import { isObject } from './config.ts';
 import type { PreparedSource } from './media.ts';
@@ -11,7 +12,13 @@ export type TokenUsage = {
 export type ModelAnswer = { answer: string; responseModel?: string; requestId?: string; usage: TokenUsage | null };
 export type PreparedItem = { id: string; label?: string; sources: PreparedSource[] };
 
-export class AudioServiceError extends Error {
+export type Attempt = { number: number; startedAt: string; error?: string; retryAfterMs?: number };
+type RequestProgress = { number: number; maxAttempts: number } | { retryAfterMs: number };
+type BatchResponse = { attempts: Attempt[] } & (
+  ({ status: 'completed' } & ModelAnswer) | { status: 'failed'; error: string }
+);
+
+class AudioServiceError extends Error {
   retryable: boolean;
   retryAfterMs?: number;
   constructor(message: string, retryable: boolean, retryAfterMs?: number) {
@@ -92,7 +99,42 @@ const protocols = {
 type Content = Record<string, unknown>[];
 type ContinuationOptions = { store: boolean; previousResponseId?: string };
 
-export async function prepareAudioRequest(
+export async function requestAudioBatch(config: AudioConfig, apiKey: string, options: {
+  items: PreparedItem[]; question: string; continuation: ContinuationOptions; signal: AbortSignal;
+  fetch?: typeof fetch; onProgress?: (phase: RequestProgress) => void;
+}): Promise<BatchResponse> {
+  const { items, question, continuation, signal, onProgress } = options;
+  const { maxAttempts, baseDelayMs } = config.retry;
+  const attempts: Attempt[] = [];
+  try {
+    const send = await prepareAudioRequest(config, apiKey, items, question, continuation, signal, options.fetch);
+    for (let number = 1; ; number++) {
+      signal.throwIfAborted();
+      const attempt: Attempt = { number, startedAt: new Date().toISOString() };
+      attempts.push(attempt);
+      const deadline = AbortSignal.timeout(config.limits.timeoutMs);
+      const bounded = AbortSignal.any([signal, deadline]);
+      try {
+        onProgress?.({ number, maxAttempts });
+        return { ...await send(bounded), status: 'completed', attempts };
+      } catch (error) {
+        attempt.error = signal.aborted ? 'Cancelled.' : deadline.aborted ? 'Audio request timed out.' : error instanceof Error ? error.message : String(error);
+        const retryable = deadline.aborted || (error instanceof AudioServiceError && error.retryable);
+        if (signal.aborted || !retryable || number === maxAttempts) throw new Error(attempt.error);
+        const wait = error instanceof AudioServiceError && error.retryAfterMs !== undefined
+          ? error.retryAfterMs : baseDelayMs * 2 ** (number - 1);
+        const retryAfterMs = Math.min(wait, 2147483647);
+        attempt.retryAfterMs = retryAfterMs;
+        onProgress?.({ retryAfterMs });
+        await delay(retryAfterMs, undefined, { signal });
+      }
+    }
+  } catch (error) {
+    return { status: 'failed', attempts, error: signal.aborted ? 'Cancelled.' : error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function prepareAudioRequest(
   config: AudioConfig, apiKey: string, items: PreparedItem[], question: string,
   continuation: ContinuationOptions, signal: AbortSignal, fetchImpl: typeof fetch = fetch,
 ): Promise<(signal: AbortSignal) => Promise<ModelAnswer>> {

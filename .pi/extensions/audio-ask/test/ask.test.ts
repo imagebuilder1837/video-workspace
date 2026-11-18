@@ -4,14 +4,13 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { createAudioAsk } from '../ask.ts';
 import { createTools } from '../index.ts';
-import { rebuildIndexes } from '../archive.ts';
-import { migrateLegacy } from '../maintenance.ts';
+import { rebuildIndexes, saveRecord } from '../archive.ts';
 
 function wave(): Buffer {
   const samples = 3 * 8000;
@@ -170,7 +169,31 @@ test('archive failure returns the obtained answer and stops further submissions'
   assert.equal(result.consultation.status, 'partial');
   assert.match(result.consultation.batches[0].answer!, /bass/);
   assert.equal(result.archive.saved, false);
+  assert.equal(result.archive.recordSaved, false);
   assert.match(result.archive.error!, /Archive save failed/);
+});
+
+test('a failed archive view keeps the saved answer and stops further submissions', async t => {
+  const f = await fixture(t);
+  await f.configure({ limits: { maxItemsPerRequest: 1 } });
+  const archive = join(f.root, '.media/audio-ask');
+  const index = join(archive, 'index.md');
+  f.respond(async () => {
+    await rm(index);
+    await mkdir(index);
+    return completion();
+  });
+  const result = await f.engine.batch({ title: 'View failure', question: 'Listen.', items: Array.from({ length: 2 }, () => ({ sources: [{ path: f.audio }] })) });
+  assert.equal(f.calls.length, 1);
+  assert.equal(result.archive.saved, false);
+  assert.equal(result.archive.recordSaved, true);
+  assert.match(result.archive.error!, /record saved.*rebuild/i);
+  assert.deepEqual(result.consultation.items.map(item => item.status), ['completed', 'pending']);
+  const record = JSON.parse(await readFile(result.archive.recordPath, 'utf8'));
+  assert.equal(record.batches[0].answer, result.consultation.batches[0].answer);
+  await rm(index, { recursive: true });
+  await rebuildIndexes(archive);
+  assert.match(await readFile(index, 'utf8'), /View failure/);
 });
 
 test('concurrent consultations share content identities and regenerate readable views from records', async t => {
@@ -188,37 +211,66 @@ test('concurrent consultations share content identities and regenerate readable 
   assert.match(await readFile(results[0].archive.reportPath, 'utf8'), /bass/);
 });
 
-test('legacy migration retains original analysis and configuration while collapsing linked batch copies', async t => {
+test('rebuild keeps indexes for surviving records and removes only unreferenced generated indexes', async t => {
   const f = await fixture(t);
-  const existing = await f.engine.ask(f.request);
-  await rm(join(f.root, '.pi/audio-ask.local.json'));
-  await writeFile(join(f.root, '.pi/audio-understand.local.json'), JSON.stringify({ ...f.config, limits: { timeoutMs: 1234, cacheMaxAgeMs: 1 } }));
-  const old = join(f.root, '.cache/audio-understand'); await mkdir(old, { recursive: true });
-  const child = 'a'.repeat(64), parent = 'b'.repeat(64);
-  const source = JSON.parse(JSON.stringify(existing.consultation.items[0].prepared[0]));
-  delete source.submitted.start; delete source.submitted.end;
-  const value = { createdAt: existing.consultation.createdAt, question: 'Historical instrument analysis ' + '渐强'.repeat(60), sources: [source], model: 'old-model', endpoint: 'https://old.invalid', answer: 'Old piano observation.', usage: null, warnings: [] };
-  await writeFile(join(old, `${child}.json`), JSON.stringify({ key: child, result: value }));
-  await writeFile(join(old, `${parent}.json`), JSON.stringify({ key: parent, result: { ...value, batches: [{ id: 'batch-1', sourceIds: [source.id], status: 'completed', answer: value.answer, cache: { key: child } }] } }));
-  const migrated = await migrateLegacy(f.root);
-  assert.equal(migrated.configMigrated, true);
-  assert.equal(migrated.imported, 1);
-  assert.equal(migrated.linkedBatchFiles, 1);
-  assert.deepEqual(migrated.issues, []);
-  const config = JSON.parse(await readFile(join(f.root, '.pi/audio-ask.local.json'), 'utf8'));
-  assert.equal(config.apiKey, f.config.apiKey);
-  assert.equal(config.api, 'openai-completions');
-  assert.equal(config.audioDataFormat, 'data-url');
-  assert.equal(config.limits.timeoutMs, 1234);
-  assert.equal(config.limits.cacheMaxAgeMs, undefined);
-  assert.equal((await readdir(old)).length, 2);
-  assert.equal((await migrateLegacy(f.root)).alreadyImported, 1);
-  const index = await readFile(join(f.root, '.media/audio-ask/index.md'), 'utf8');
-  assert.match(index, /Historical instrument analysis/);
-  const [directory] = (await readdir(join(f.root, '.media/audio-ask/records'))).filter(name => name.includes('-legacy-'));
-  const imported = JSON.parse(await readFile(join(f.root, '.media/audio-ask/records', directory, 'record.json'), 'utf8'));
-  assert.equal(imported.items[0].prepared[0].timeMapping, 'legacy-estimate');
-  assert.match(imported.batches[0].answer, /Old piano observation/);
+  const first = await f.engine.ask({ ...f.request, title: 'First take' });
+  const second = await f.engine.ask({ ...f.request, title: 'Second take' });
+  const archive = join(f.root, '.media/audio-ask');
+  const fingerprint = second.consultation.items[0].prepared[0].sha256;
+  const directory = join(archive, 'assets', fingerprint);
+  const index = join(directory, 'index.md');
+  const notes = join(directory, 'notes.txt');
+  await writeFile(notes, 'Keep this annotation.');
+  await rm(dirname(first.archive.recordPath), { recursive: true });
+  await rebuildIndexes(archive);
+  const current = await readFile(index, 'utf8');
+  assert.match(current, /Second take/);
+  assert.doesNotMatch(current, /First take/);
+  await rm(dirname(second.archive.recordPath), { recursive: true });
+  await rebuildIndexes(archive);
+  await assert.rejects(readFile(index), { code: 'ENOENT' });
+  assert.equal(await readFile(notes, 'utf8'), 'Keep this annotation.');
+  assert.doesNotMatch(await readFile(join(archive, 'index.md'), 'utf8'), /First take|Second take/);
+});
+
+test('rebuild preserves indexes when the scan cannot read all consultation records', async t => {
+  const f = await fixture(t);
+  const result = await f.engine.ask(f.request);
+  const archive = join(f.root, '.media/audio-ask');
+  const index = join(archive, 'assets', result.consultation.items[0].prepared[0].sha256, 'index.md');
+  const original = await readFile(index, 'utf8');
+  await rm(result.archive.recordPath);
+  await assert.rejects(rebuildIndexes(archive), { code: 'ENOENT' });
+  assert.equal(await readFile(index, 'utf8'), original);
+  await writeFile(result.archive.recordPath, '{');
+  await assert.rejects(rebuildIndexes(archive), SyntaxError);
+  assert.equal(await readFile(index, 'utf8'), original);
+});
+
+test('a busy archive keeps its previous record and concurrent saves and rebuilds keep views consistent', async t => {
+  const f = await fixture(t);
+  const { consultation, archive: paths } = await f.engine.ask(f.request);
+  const archive = join(f.root, '.media/audio-ask');
+  const answer = 'The newer answer is durable.';
+  const updated = { ...consultation, batches: [{ ...consultation.batches[0], answer }] };
+  const lock = join(archive, '.index.lock');
+  await writeFile(lock, '', { flag: 'wx' });
+  try {
+    const blocked = await saveRecord(archive, updated);
+    assert.equal(blocked.recordSaved, false);
+    assert.equal(blocked.saved, false);
+    const previous = JSON.parse(await readFile(paths.recordPath, 'utf8'));
+    assert.equal(previous.batches[0].answer, consultation.batches[0].answer);
+  } finally {
+    await rm(lock);
+  }
+  const [, saved] = await Promise.all([rebuildIndexes(archive), saveRecord(archive, updated)]);
+  assert.equal(saved.saved, true);
+  const record = JSON.parse(await readFile(paths.recordPath, 'utf8'));
+  assert.equal(record.batches[0].answer, answer);
+  const report = await readFile(paths.reportPath, 'utf8');
+  assert.ok(report.includes(answer));
+  assert.ok(!report.includes(consultation.batches[0].answer!));
 });
 
 test('MP3 cuts preserve encoded packets and map audible samples to source time; PCM keeps source precision', async t => {

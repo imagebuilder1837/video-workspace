@@ -11,7 +11,6 @@ export type InspectedSource = Probe & { path: string; sha256: string; start: num
 export type SourceRecord = {
   id: string; label?: string; path: string; sha256: string; sourceDuration: number; start: number; end: number;
   requested: { start?: number; end?: number };
-  timeMapping?: 'legacy-estimate';
   submitted: {
     format: string; sha256: string; bytes: number; duration: number; start: number; end: number;
     sampleRate: number; channels: number; transformed: boolean;

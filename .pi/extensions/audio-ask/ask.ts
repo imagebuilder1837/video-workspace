@@ -2,12 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, isObject } from './config.ts';
-import type { AudioConfig } from './config.ts';
-import { prepareAudioRequest, AudioServiceError, type PreparedItem } from './audio-api.ts';
+import { requestAudioBatch, type PreparedItem } from './audio-api.ts';
 import { inspectSource, prepareSource } from './media.ts';
-import { archivePaths, readConsultation, saveRecord } from './archive.ts';
+import { readConsultation, saveRecord } from './archive.ts';
 import type { AskRequest, AskResult, AudioItem, BatchRequest, BatchRecord, Consultation, ItemRecord } from './types.ts';
 
 export type CallOptions = { cwd?: string; signal?: AbortSignal; onProgress?: (phase: string) => void };
@@ -88,18 +86,15 @@ export function createAudioAsk(
       ...(store ? { allowContinuation: true } : {}),
       ...(parent ? { continuation: { id: parent.record.id, recordPath: parent.recordPath } } : {}),
     };
-    const result: AskResult = { consultation: record, archive: archivePaths(archiveRoot, record) };
     const progress = (text: string) => { options.onProgress?.(text); signal.throwIfAborted(); };
-    const persist = async () => {
+    const checkpoint = () => {
       record.updatedAt = new Date().toISOString();
-      try { result.archive = await saveRecord(archiveRoot, record); return true; } catch (error) {
-        result.archive.saved = false;
-        result.archive.error = `Archive save failed: ${error instanceof Error ? error.message : String(error)}`;
-        return false;
-      }
+      return saveRecord(archiveRoot, record);
     };
     // Check archive access before starting paid work; each batch then checkpoints its answer.
-    if (!await persist()) { record.status = 'failed'; return result; }
+    let archive = await checkpoint();
+    if (!archive.saved) { record.status = 'failed'; return { consultation: record, archive }; }
+    const persist = async () => (archive = await checkpoint()).saved;
     let scratch: string | undefined;
     let stopped = false;
     let pending: PreparedGroup[] = [];
@@ -116,14 +111,19 @@ export function createAudioAsk(
       record.batches.push(entry);
       const items = record.items.filter(item => itemIds.includes(item.id));
       try {
-        const send = await prepareAudioRequest(config, key, group, request.question, { store, previousResponseId }, signal, dependencies.fetch);
-        await requestBatch(config, send, entry, signal, progress);
-        for (const item of items) item.status = 'completed';
-        if (store && !entry.requestId) record.warnings.push('The service returned no response ID for continuation.');
-      } catch (error) {
-        entry.status = 'failed';
-        entry.error = signal.aborted ? 'Cancelled.' : error instanceof Error ? error.message : String(error);
-        for (const item of items) { item.status = 'failed'; item.error = entry.error; }
+        const response = await requestAudioBatch(config, key, {
+          items: group, question: request.question, continuation: { store, previousResponseId }, signal, fetch: dependencies.fetch,
+          onProgress: phase => progress('retryAfterMs' in phase
+            ? `${entry.id}: retry in ${phase.retryAfterMs} ms`
+            : `${entry.id}: request ${phase.number}/${phase.maxAttempts} (${itemIds.join(', ')})`),
+        });
+        Object.assign(entry, response);
+        if (response.status === 'completed') {
+          for (const item of items) item.status = 'completed';
+          if (store && !response.requestId) record.warnings.push('The service returned no response ID for continuation.');
+        } else {
+          for (const item of items) { item.status = 'failed'; item.error = response.error; }
+        }
       } finally {
         for (const item of group) await cleanup(item.directory);
       }
@@ -172,8 +172,8 @@ export function createAudioAsk(
     const completed = record.items.filter(item => item.status === 'completed').length;
     record.status = signal.aborted ? 'cancelled' : completed === record.items.length ? 'completed' : completed ? 'partial' : 'failed';
     // Ready means prepared but unsent; preserve this distinction when a preceding batch stops the run.
-    if (!result.archive.error) await persist();
-    return result;
+    if (archive.saved) await persist();
+    return { consultation: record, archive };
   }
   return {
     ask: (request: AskRequest, options: CallOptions = {}) => run(request, false, options),
@@ -196,31 +196,4 @@ async function prepareItem(item: ItemRecord, directory: string, limit: number, c
   }
   item.status = 'ready';
   return { id: item.id, label: item.label, sources, directory, bytes };
-}
-
-async function requestBatch(
-  config: AudioConfig, send: Awaited<ReturnType<typeof prepareAudioRequest>>, entry: BatchRecord,
-  signal: AbortSignal, progress: (text: string) => void,
-) {
-  for (let number = 1; number <= config.retry.maxAttempts; number++) {
-    signal.throwIfAborted();
-    const attempt: BatchRecord['attempts'][number] = { number, startedAt: new Date().toISOString() };
-    entry.attempts.push(attempt);
-    const deadline = AbortSignal.timeout(config.limits.timeoutMs);
-    const bounded = AbortSignal.any([signal, deadline]);
-    try {
-      progress(`${entry.id}: request ${number}/${config.retry.maxAttempts} (${entry.itemIds.join(', ')})`);
-      Object.assign(entry, await send(bounded), { status: 'completed' });
-      return;
-    } catch (error) {
-      attempt.error = signal.aborted ? 'Cancelled.' : deadline.aborted ? 'Audio request timed out.' : error instanceof Error ? error.message : String(error);
-      const retryable = deadline.aborted || (error instanceof AudioServiceError && error.retryable);
-      if (signal.aborted || !retryable || number === config.retry.maxAttempts) throw new Error(attempt.error);
-      const wait = error instanceof AudioServiceError && error.retryAfterMs !== undefined
-        ? error.retryAfterMs : config.retry.baseDelayMs * 2 ** (number - 1);
-      attempt.retryAfterMs = Math.min(wait, 2147483647);
-      progress(`${entry.id}: retry in ${attempt.retryAfterMs} ms`);
-      await delay(attempt.retryAfterMs, undefined, { signal });
-    }
-  }
 }
