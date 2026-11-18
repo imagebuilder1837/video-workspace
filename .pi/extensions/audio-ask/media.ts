@@ -5,12 +5,13 @@ import { createReadStream } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-export type AudioSource = { path: string; start?: number; end?: number };
+export type AudioSource = { path: string; start?: number; end?: number; label?: string };
 type Probe = { duration: number; sampleRate: number; channels: number; container: string; startTime: number; codec: string };
 export type InspectedSource = Probe & { path: string; sha256: string; start: number; end: number; requested: { start?: number; end?: number } };
 export type SourceRecord = {
-  id: string; path: string; sha256: string; sourceDuration: number; start: number; end: number;
+  id: string; label?: string; path: string; sha256: string; sourceDuration: number; start: number; end: number;
   requested: { start?: number; end?: number };
+  timeMapping?: 'legacy-estimate';
   submitted: {
     format: string; sha256: string; bytes: number; duration: number; start: number; end: number;
     sampleRate: number; channels: number; transformed: boolean;
@@ -141,7 +142,7 @@ export async function prepareSource(
   const size = (await stat(path)).size;
   const encodedBytes = 4 * Math.ceil(size / 3);
   if (encodedBytes > maxEncodedBytes) {
-    throw new Error(`${id} needs ${encodedBytes} Base64 audio bytes; per-upload maxEncodedAudioBytes is ${maxEncodedBytes}. Select a shorter range or adjust the configured service limit. 0 uploads.`);
+    throw new Error(`${id} needs ${encodedBytes} Base64 audio bytes; maxEncodedAudioBytes is ${maxEncodedBytes}. Select a shorter range or adjust the configured service limit.`);
   }
   const submitted = passthrough ? source : await probe(path, signal);
   let start = passthrough ? 0 : cutStart;
@@ -155,7 +156,7 @@ export async function prepareSource(
       const threshold = cutStart > 0 ? cutStart + source.startTime : 0;
       const first = candidates.find(candidate => Number(candidate.pts_time) >= threshold - 0.000001);
       if (!first || first.data_hash !== packet?.data_hash) {
-        throw new Error(`${id} MP3 source-time mapping could not be verified. Select another range or supply WAV. 0 uploads.`);
+        throw new Error(`${id} MP3 source-time mapping could not be verified. Select another range or supply WAV.`);
       }
       start = Number(first.pts_time) - source.startTime + timing.start;
     }
@@ -163,7 +164,7 @@ export async function prepareSource(
   const end = start + duration;
   const tolerance = 1 / submitted.sampleRate + 0.00001;
   if (start > source.start + tolerance || end < source.end - tolerance) {
-    throw new Error(`${id} prepared audio covers [${start}, ${end}), shorter than [${source.start}, ${source.end}). Select another range or supply WAV. 0 uploads.`);
+    throw new Error(`${id} prepared audio covers [${start}, ${end}), shorter than [${source.start}, ${source.end}). Select another range or supply WAV.`);
   }
   const sha256 = await hashFile(path, signal);
   if ((passthrough ? sha256 : await hashFile(source.path, signal)) !== source.sha256) {

@@ -2,8 +2,7 @@
 /projects/*
 /shared/
 /.media/
-/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/audio-direction/
 /.hyperframes/
-/.cache/
-/.pi/audio-understand.local.json
-npm-debug.log*
+/.pi/audio-ask.local.json

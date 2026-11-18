@@ -20,22 +20,31 @@ npx skills add heygen-com/hyperframes
 
 在 VS Code 中打开工作台根目录，照常通过 Pi 插件启动会话；插件配置与全局环境保持原样。日常制作的命令调用约定见 [行为规范](spec.md#视频项目与执行范围)。
 
-## 音频问答
+## Pi Audio Ask
 
-从工作台根启动 pi，使其发现 `.pi/extensions/audio-understand/`；已有会话用 `/reload` 加载扩展。
-将 [示例配置](../.pi/audio-understand.example.json) 复制为 `.pi/audio-understand.local.json`，填写服务信息；密钥可直接配置或由 `apiKeyEnv` 引用启动环境。配置文件每次调用读取，环境变量变更需要重启 pi；明文密钥文件应限制读取权限。
+从工作台根启动 Pi，使其发现 `.pi/extensions/audio-ask/` 和本地 `audio-direction` skill；已有会话用 `/reload` 加载。
+将 [示例配置](../.pi/audio-ask.example.json) 复制为 `.pi/audio-ask.local.json`，填写服务信息。密钥直接配置或由 `apiKeyEnv` 引用启动环境，明文文件权限设为 `600`。配置按次读取；环境变量变更后重启 Pi。
 
-服务须接受非流式 Chat Completions：`input_audio.data` 使用 Base64 Data URL，`format` 为 `wav` 或 `mp3`，返回完整文本答案。模型额外参数放在 `requestParams`；OpenAI-compatible 的声明本身不能保证音频兼容。
+`api` 沿用 Pi 的协议名：`openai-completions` 对应 `/chat/completions`，`openai-responses` 对应 `/responses`。两种协议均使用 WAV／MP3 与非流式文本回复。Responses 按[百炼 Qwen 音频契约](https://help.aliyun.com/zh/model-studio/qwen-omni#qwen38-responses)发送扁平 `input_audio` 和完整 Data URI；Chat Completions 使用嵌套 `input_audio`，默认 Base64，按服务要求可选 `"audioDataFormat": "data-url"`。示例使用 Qwen3.8-Omni-Flash；`apiKey` 留空时从 `PI_AUDIO_ASK_API_KEY` 读取。协议参数放在 `requestParams`，例如 Responses 的 `max_output_tokens`。
 
-`maxEncodedAudioBytes` 是用户按外部服务约束设置的单次上传预算，计量一次远端请求中全部音频的 Base64 字节总量（约为音频字节的 4/3）；完整 HTTP 请求体还包含 JSON、问题及来源说明，配置时按服务限制预留余量。插件先准备并检查全部来源，再按输入顺序将完整来源／选段分批串行上传。单项超额时整次失败、零上传，可由主代理缩短选段或调整服务额度。`timeoutMs` 覆盖准备及全部批次。
+`maxEncodedAudioBytes` 计量每次请求全部音频的 Base64 字节总量，约为文件字节的 4/3；配置时为 HTTP 请求中的问题、JSON 和来源说明预留容量。`maxItemsPerRequest` 控制每批完整素材组的数量。`timeoutMs` 按远端请求计时，批量处理逐批准备与保存，可随时取消。
 
-起止时间回退到 `[0, 源时长]`，回退后区间须非空且正序。完整 MP3／WAV 直接使用；MP3 选段复制压缩帧并向外覆盖切点，PCM WAV 裁切保留样本精度；其他格式转换为服务接受的 MP3／WAV。来源记录保留原始请求、有效区间及 `submitted` 实际提交区间，片段零秒对应 `submitted.start` 源秒。插件验证覆盖和映射，无法可靠验证时报告错误。
+完整 MP3／WAV 尽量原样提交，MP3 裁切复制压缩帧，PCM WAV 保留样本精度，其余格式转换为接口接受的音频。时间与档案约定见 [Pi Audio Ask 参考](../.agents/skills/audio-direction/references/pi-audio-ask.md)。
 
-每批独立回答并保留全局 `source-N` 标识。结果的 `status` 表示全部完成、部分完成或失败，`batches` 列出各批来源、回答、用量、缓存及错误。某批失败后停止后续上传，保留已完成结果；显式重试复用已完成批次。跨批比较由主代理另行判断。
+每批先准备一次请求体，远端超时按每次发送及读取响应计时。暂时性故障按配置有限重试，等待时间优先采用服务的 `Retry-After`；本地素材问题按项反馈，远端持续故障或归档失败时保存进度并停止后续提交。
 
-请求缓存及调用报告位于 `.cache/audio-understand/`，含问题、回答和来源记录。命中批次的用量属于原请求，本次直接复用。`cacheMaxAgeMs` 限制复用年龄，设为 `0` 强制重新请求；删除相应批次缓存报告也可重新请求。缓存过期仅停止复用，磁盘清理由使用者决定。模型 alias 的服务端更新无法仅靠名称识别。
+档案位于工作台 `.media/audio-ask/`。完整 JSON 记录支持重建 Markdown 报告与索引；多个调用各自保存记录，共享索引通过文件锁协调更新。异常退出遗留锁时，确认写入进程已结束，再移除错误中列出的 `.index.lock`。
 
-音频测试使用合成声音、本地文件和 HTTP 替身；pi 的实际加载及云端听音质量分别验证。测试沿用 Node 原生 TypeScript 支持，扩展运行由 pi 加载。
+工作台根下的维护命令：
+
+```sh
+node .pi/extensions/audio-ask/maintenance.ts rebuild
+node .pi/extensions/audio-ask/maintenance.ts migrate
+```
+
+`rebuild` 从原始记录重建阅读视图。`migrate` 离线迁移旧配置与 `.cache/audio-understand/` 分析，合并已有引用关系中的批次副本；重复执行沿用已导入记录，旧分析文件原位保留。
+
+`npm run test:audio` 使用合成音频、本地文件和 HTTP 替身验证公共接口行为，沿用 Node 原生 TypeScript 支持。Pi 实际加载、真实模型听音质量及创作中的主动咨询分别验收。
 
 ## 升级与排错
 

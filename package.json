@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:audio": "node --test .pi/extensions/audio-understand/test/*.test.ts",
+    "test:audio": "node --test .pi/extensions/audio-ask/test/*.test.ts",
     "test:env": "node --test test/workspace-env.test.js",
     "hf": "./bin/workspace-env hyperframes"
   },
